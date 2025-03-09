@@ -4,14 +4,22 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # Token Telegram Bot
 TOKEN = "8183122181:AAFd4urRYq5p2FYQUDb-iKFLDmWC8xyBAg4"
 
-# Inisialisasi bot
+# Inisialisasi bot dan dispatcher dengan storage untuk FSM
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
+
+# Definisi FSM untuk menyimpan data
+class QRISState(StatesGroup):
+    waiting_for_qris = State()
+    waiting_for_nominal = State()
+    waiting_for_biaya = State()
 
 # Fungsi CRC16
 def crc16(data: str) -> str:
@@ -55,62 +63,73 @@ def generate_qr(qris_data: str, filename: str):
 
 # Command Start
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("Kirimkan QRIS statis Anda:")
+async def start(message: types.Message, state: FSMContext):
+    await state.set_state(QRISState.waiting_for_qris)
+    await message.answer("Kirimkan QRIS statis Anda dalam bentuk teks:")
 
 # Handler untuk menerima QRIS statis
-@dp.message(lambda msg: len(msg.text) > 50)  # QRIS umumnya panjang
-async def get_qris_statis(message: types.Message):
-    qris_statis = message.text
-    await message.answer("Masukkan nominal pembayaran:")
+@dp.message(QRISState.waiting_for_qris)
+async def get_qris_statis(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Mohon kirim QRIS dalam bentuk teks, bukan gambar atau file.")
+        return
     
-    # Simpan data sementara
-    await bot.storage.set_data(message.from_user.id, {"qris_statis": qris_statis})
+    qris_statis = message.text
+    await state.update_data(qris_statis=qris_statis)
+    await state.set_state(QRISState.waiting_for_nominal)
+    await message.answer("Masukkan nominal pembayaran (hanya angka):")
 
 # Handler untuk menerima nominal pembayaran
-@dp.message(lambda msg: msg.text.isdigit())
-async def get_nominal(message: types.Message):
+@dp.message(QRISState.waiting_for_nominal)
+async def get_nominal(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Mohon masukkan nominal dalam angka.")
+        return
+    
     nominal = message.text
-    data = await bot.storage.get_data(message.from_user.id)
+    await state.update_data(nominal=nominal)
     
-    qris_statis = data.get("qris_statis")
-    
-    # Keyboard biaya layanan
-    keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="Tanpa Biaya", callback_data=f"biaya_none|{qris_statis}|{nominal}")
-    keyboard.button(text="Tambah Biaya", callback_data=f"biaya_add|{qris_statis}|{nominal}")
-    
-    await message.answer("Apakah ada biaya layanan?", reply_markup=keyboard.as_markup())
+    # Keyboard untuk biaya layanan
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(types.InlineKeyboardButton(text="Tanpa Biaya", callback_data="biaya_none"))
+    keyboard.add(types.InlineKeyboardButton(text="Tambah Biaya", callback_data="biaya_add"))
+
+    await state.set_state(QRISState.waiting_for_biaya)
+    await message.answer("Apakah ada biaya layanan?", reply_markup=keyboard)
 
 # Handler untuk biaya layanan
-@dp.callback_query(lambda c: c.data.startswith("biaya_"))
-async def biaya_handler(callback: types.CallbackQuery):
-    data = callback.data.split("|")
-    biaya_type, qris_statis, nominal = data[0], data[1], data[2]
+@dp.callback_query(QRISState.waiting_for_biaya)
+async def biaya_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    qris_statis = data["qris_statis"]
+    nominal = data["nominal"]
 
-    if biaya_type == "biaya_none":
-        biaya = None
-        qris_dinamis = convert_qris(qris_statis, nominal, biaya)
+    if callback.data == "biaya_none":
+        qris_dinamis = convert_qris(qris_statis, nominal, None)
         
         # Buat QR Code
         filename = f"qris_{callback.from_user.id}.png"
         generate_qr(qris_dinamis, filename)
 
-        # Kirim hasil QR Code
         await bot.send_photo(callback.from_user.id, FSInputFile(filename), caption=f"QRIS Dinamis:\n`{qris_dinamis}`", parse_mode="Markdown")
+        await state.clear()
     
-    elif biaya_type == "biaya_add":
-        await bot.storage.set_data(callback.from_user.id, {"qris_statis": qris_statis, "nominal": nominal})
-        await callback.message.answer("Masukkan biaya layanan dalam rupiah:")
+    elif callback.data == "biaya_add":
+        await callback.message.answer("Masukkan biaya layanan dalam angka:")
+        await state.set_state(QRISState.waiting_for_biaya)
 
 # Handler untuk biaya layanan dalam rupiah
-@dp.message(lambda msg: msg.text.isdigit())
-async def get_biaya_layanan(message: types.Message):
-    biaya = message.text
-    data = await bot.storage.get_data(message.from_user.id)
+@dp.message(QRISState.waiting_for_biaya)
+async def get_biaya_layanan(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Mohon masukkan biaya layanan dalam angka.")
+        return
     
-    qris_statis = data.get("qris_statis")
-    nominal = data.get("nominal")
+    biaya = message.text
+    data = await state.get_data()
+    
+    qris_statis = data["qris_statis"]
+    nominal = data["nominal"]
     
     qris_dinamis = convert_qris(qris_statis, nominal, biaya)
     
@@ -118,8 +137,8 @@ async def get_biaya_layanan(message: types.Message):
     filename = f"qris_{message.from_user.id}.png"
     generate_qr(qris_dinamis, filename)
 
-    # Kirim hasil QR Code
     await bot.send_photo(message.chat.id, FSInputFile(filename), caption=f"QRIS Dinamis:\n`{qris_dinamis}`", parse_mode="Markdown")
+    await state.clear()
 
 # Menjalankan bot
 async def main():
