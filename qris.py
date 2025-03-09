@@ -2,7 +2,7 @@ import qrcode
 import os
 import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InputFile
+from aiogram.types import FSInputFile
 from aiogram.filters import Command
 
 # Token bot dari BotFather
@@ -60,9 +60,12 @@ async def handle_message(message: types.Message):
             qr_path = f"qris_{user_id}.png"
             qr.save(qr_path)
 
-            # Kirim hasil
+            # Mengirim QRIS dalam format monospace
             await message.answer(f"QRIS Dinamis:\n```\n{escaped_qris}\n```", parse_mode="MarkdownV2")
-            await message.answer_photo(photo=InputFile(qr_path), caption="Berikut QR Code-nya.")
+
+            # Mengirim gambar QR Code
+            photo = FSInputFile(qr_path)
+            await message.answer_photo(photo=photo, caption="Berikut QR Code-nya.")
 
             # Hapus gambar setelah dikirim
             os.remove(qr_path)
