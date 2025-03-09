@@ -52,13 +52,16 @@ async def handle_message(message: types.Message):
             qris_statis = user_data[user_id]["qris"]
             qris_dinamis = generate_dynamic_qris(qris_statis, amount)
 
+            # Escaping karakter khusus untuk MarkdownV2
+            escaped_qris = qris_dinamis.replace("-", "\\-").replace(".", "\\.")
+
             # Generate QR Code
             qr = qrcode.make(qris_dinamis)
             qr_path = f"qris_{user_id}.png"
             qr.save(qr_path)
 
             # Kirim hasil
-            await message.answer(f"QRIS Dinamis:\n```{qris_dinamis}```", parse_mode="Markdown")
+            await message.answer(f"QRIS Dinamis:\n```\n{escaped_qris}\n```", parse_mode="MarkdownV2")
             await message.answer_photo(photo=InputFile(qr_path), caption="Berikut QR Code-nya.")
 
             # Hapus gambar setelah dikirim
